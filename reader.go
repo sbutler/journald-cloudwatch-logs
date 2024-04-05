@@ -108,9 +108,7 @@ func BatchRecords(records <-chan Record, batches chan<- []Record, batchSize int)
 				// Not enough records yet, so wait again.
 				continue
 			}
-			break
 		case <-timer.C:
-			break
 		}
 
 		timer.Stop()

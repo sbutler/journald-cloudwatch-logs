@@ -62,12 +62,15 @@ func run(configFilename string) error {
 
 	state, err := OpenState(config.StateFilename)
 	if err != nil {
-		return fmt.Errorf("Failed to open %s: %s", config.StateFilename, err)
+		return fmt.Errorf("failed to open %s: %s", config.StateFilename, err)
 	}
 
 	lastBootId, nextSeq := state.LastState()
 
-	awsSession := config.NewAWSSession()
+	awsSession, err := config.NewAWSSession()
+	if err != nil {
+		return fmt.Errorf("error creating AWS session: %s", err)
+	}
 
 	writer, err := NewWriter(
 		awsSession,
@@ -85,6 +88,9 @@ func run(configFilename string) error {
 	}
 
 	bootId, err := journal.GetData("_BOOT_ID")
+	if err != nil {
+		return fmt.Errorf("failed to read _BOOT_ID: %s", err)
+	}
 	bootId = bootId[9:] // Trim off "_BOOT_ID=" prefix
 
 	// If the boot id has changed since our last run then we'll start from
@@ -107,7 +113,7 @@ func run(configFilename string) error {
 
 	err = state.SetState(bootId, nextSeq)
 	if err != nil {
-		return fmt.Errorf("Failed to write state: %s", err)
+		return fmt.Errorf("failed to write state: %s", err)
 	}
 
 	bufSize := config.BufferSize
@@ -122,12 +128,12 @@ func run(configFilename string) error {
 
 		nextSeq, err = writer.WriteBatch(batch)
 		if err != nil {
-			return fmt.Errorf("Failed to write to cloudwatch: %s", err)
+			return fmt.Errorf("failed to write to cloudwatch: %s", err)
 		}
 
 		err = state.SetState(bootId, nextSeq)
 		if err != nil {
-			return fmt.Errorf("Failed to write state: %s", err)
+			return fmt.Errorf("failed to write state: %s", err)
 		}
 
 	}
@@ -136,7 +142,7 @@ func run(configFilename string) error {
 	// Last chance to write the state.
 	err = state.SetState(bootId, nextSeq)
 	if err != nil {
-		return fmt.Errorf("Failed to write state on exit: %s", err)
+		return fmt.Errorf("failed to write state on exit: %s", err)
 	}
 
 	return nil

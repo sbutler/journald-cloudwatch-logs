@@ -63,13 +63,11 @@ func unmarshalRecord(journal *sdjournal.Journal, toVal reflect.Value) error {
 				continue
 			}
 			fieldVal.SetInt(int64(intVal))
-			break
 		case reflect.String:
 			fieldVal.SetString(value)
-			break
 		default:
 			// Should never happen
-			panic(fmt.Errorf("Can't unmarshal to %s", fieldType))
+			panic(fmt.Errorf("can't unmarshal to %s", fieldType))
 		}
 	}
 
