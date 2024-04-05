@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"strings"
 
 	"golang.org/x/exp/maps"
 
@@ -143,6 +145,11 @@ func (c *Config) NewAWSSession() (*awsSession.Session, error) {
 func readFileConfig(filename string, metaClient *ec2metadata.EC2Metadata) (*fileConfig, error) {
 	ctx := &hcl.EvalContext{
 		Variables: map[string]cty.Value{},
+	}
+
+	for _, environEntry := range os.Environ() {
+		environPair := strings.SplitN(environEntry, "=", 2)
+		ctx.Variables["env."+environPair[0]] = cty.StringVal(environPair[1])
 	}
 
 	// If we can fetch the InstanceIdentityDocument then iterate over the
