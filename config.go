@@ -2,9 +2,8 @@ package main
 
 import (
 	"fmt"
-	"os"
-	"reflect"
-	"strings"
+
+	"golang.org/x/exp/maps"
 
 	"github.com/aws/aws-sdk-go/aws"
 	awsCredentials "github.com/aws/aws-sdk-go/aws/credentials"
@@ -12,7 +11,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws/ec2metadata"
 	awsSession "github.com/aws/aws-sdk-go/aws/session"
 
-	"github.com/hashicorp/hcl"
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsimple"
+	"github.com/zclconf/go-cty/cty"
 )
 
 type Config struct {
@@ -61,13 +62,13 @@ func getLogLevel(priority string) (Priority, error) {
 }
 
 func LoadConfig(filename string) (*Config, error) {
-	configBytes, err := os.ReadFile(filename)
+	sess, err := awsSession.NewSession(&aws.Config{})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unable to create AWS session: %s", err)
 	}
+	metaClient := ec2metadata.New(sess)
 
-	var fConfig fileConfig
-	err = hcl.Decode(&fConfig, string(configBytes))
+	fConfig, err := readFileConfig(filename, metaClient)
 	if err != nil {
 		return nil, err
 	}
@@ -79,34 +80,24 @@ func LoadConfig(filename string) (*Config, error) {
 		return nil, fmt.Errorf("state_file is required")
 	}
 
-	sess, err := awsSession.NewSession(&aws.Config{})
-	if err != nil {
-		return nil, fmt.Errorf("unable to create AWS session: %s", err)
-	}
-	metaClient := ec2metadata.New(sess)
-
-	expandFileConfig(&fConfig, metaClient)
-
 	config := &Config{}
 
 	if fConfig.AWSRegion != "" {
 		config.AWSRegion = fConfig.AWSRegion
 	} else {
-		region, err := metaClient.Region()
+		config.AWSRegion, err = metaClient.Region()
 		if err != nil {
 			return nil, fmt.Errorf("unable to detect AWS region: %s", err)
 		}
-		config.AWSRegion = region
 	}
 
 	if fConfig.EC2InstanceId != "" {
 		config.EC2InstanceId = fConfig.EC2InstanceId
 	} else {
-		instanceId, err := metaClient.GetMetadata("instance-id")
+		config.EC2InstanceId, err = metaClient.GetMetadata("instance-id")
 		if err != nil {
 			return nil, fmt.Errorf("unable to detect EC2 instance id: %s", err)
 		}
-		config.EC2InstanceId = instanceId
 	}
 
 	if fConfig.LogPriority == "" {
@@ -156,84 +147,46 @@ func (c *Config) NewAWSSession() (*awsSession.Session, error) {
 	return awsSession.NewSession(config)
 }
 
-/*
- * Expand variables of the form $Foo or ${Foo} in the user provided config
- * from the EC2Metadata Instance Identity Document
- * [ https://docs.aws.amazon.com/sdk-for-go/api/aws/ec2metadata/#EC2InstanceIdentityDocument ]
- * or the environment
- */
-func expandFileConfig(config *fileConfig, metaClient *ec2metadata.EC2Metadata) {
-	vars := make(map[string]string)
+func readFileConfig(filename string, metaClient *ec2metadata.EC2Metadata) (*fileConfig, error) {
+	ctx := &hcl.EvalContext{
+		Variables: map[string]cty.Value{},
+	}
 
 	// If we can fetch the InstanceIdentityDocument then iterate over the
 	// struct extracting the string fields and their values into the vars map
-	data, err := metaClient.GetInstanceIdentityDocument()
+	document, err := metaClient.GetInstanceIdentityDocument()
 	if err == nil {
-		metadata := reflect.ValueOf(data)
-
-		for i := 0; i < metadata.NumField(); i++ {
-			field := metadata.Field(i)
-			ftype := metadata.Type().Field(i)
-			if field.Type() != reflect.TypeOf("") {
-				continue
-			}
-			vars[ftype.Name] = fmt.Sprintf("%v", field.Interface())
+		documentValues := map[string]cty.Value{
+			"instance.devpayProductCodes":      stringListVal(document.DevpayProductCodes),
+			"instance.marketplaceProductCodes": stringListVal(document.MarketplaceProductCodes),
+			"instance.availabilityZone":        cty.StringVal(document.AvailabilityZone),
+			"instance.privateIp":               cty.StringVal(document.PrivateIP),
+			"instance.version":                 cty.StringVal(document.Version),
+			"instance.region":                  cty.StringVal(document.Region),
+			"instance.instanceId":              cty.StringVal(document.InstanceID),
+			"instance.billingProducts":         stringListVal(document.BillingProducts),
+			"instance.instanceType":            cty.StringVal(document.InstanceType),
+			"instance.accountId":               cty.StringVal(document.AccountID),
+			"instance.imageId":                 cty.StringVal(document.ImageID),
+			"instance.kernelId":                cty.StringVal(document.KernelID),
+			"instance.ramdiskId":               cty.StringVal(document.RamdiskID),
+			"instance.architecture":            cty.StringVal(document.Architecture),
 		}
+		maps.Copy(ctx.Variables, documentValues)
 	}
 
-	// Iterate over all the string fields in the fileConfig struct performing
-	// Variable expansion on them, with EC2 Instance Identity fields overriding
-	// the OS environment
-	rconfig := reflect.ValueOf(config)
-	for i := 0; i < rconfig.Elem().NumField(); i++ {
-		field := rconfig.Elem().Field(i)
-		if field.Type() != reflect.TypeOf("") {
-			continue
-		}
-		val := field.Interface().(string)
-		if val != "" {
-			field.SetString(
-				expandBraceVars(
-					val,
-					func(varname string) string {
-						if strings.HasPrefix(varname, "instance.") {
-							if val, exists := vars[strings.TrimPrefix(varname, "instance.")]; exists {
-								return val
-							}
-							// Unknown key => empty string
-							return ""
-						} else if strings.HasPrefix(varname, "env.") {
-							return os.Getenv(strings.TrimPrefix(varname, "env."))
-						} else {
-							// Unknown prefix => empty string
-							return ""
-						}
-					},
-				),
-			)
-		}
+	var fConfig fileConfig
+	err = hclsimple.DecodeFile(filename, ctx, &fConfig)
+	if err != nil {
+		return nil, err
 	}
+	return &fConfig, nil
 }
 
-// Modified version of os.Expand() that only expands ${name} and not $name
-func expandBraceVars(s string, mapping func(string) string) string {
-	buf := make([]byte, 0, 2*len(s))
-	// ${} is all ASCII, so bytes are fine for this operation.
-	i := 0
-	for j := 0; j < len(s); j++ {
-		if s[j] == '$' && j+3 < len(s) && s[j+1] == '{' {
-			buf = append(buf, s[i:j]...)
-			idx := strings.Index(s[j+2:], "}")
-			if idx >= 0 {
-				// We have a full ${name} string
-				buf = append(buf, mapping(s[j+2:j+2+idx])...)
-				j += 2 + idx
-			} else {
-				// We ran out of string (unclosed ${)
-				return string(buf)
-			}
-			i = j + 1
-		}
+func stringListVal(vals []string) cty.Value {
+	ctyVals := make([]cty.Value, len(vals))
+	for i, val := range vals {
+		ctyVals[i] = cty.StringVal(val)
 	}
-	return string(buf) + s[i:]
+	return cty.ListVal(ctyVals)
 }
