@@ -184,6 +184,10 @@ func readFileConfig(filename string, metaClient *ec2metadata.EC2Metadata) (*file
 }
 
 func stringListVal(vals []string) cty.Value {
+	if len(vals) == 0 {
+		return cty.ListValEmpty(cty.String)
+	}
+
 	ctyVals := make([]cty.Value, len(vals))
 	for i, val := range vals {
 		ctyVals[i] = cty.StringVal(val)
