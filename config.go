@@ -29,14 +29,14 @@ type Config struct {
 }
 
 type fileConfig struct {
-	AWSRegion     string `hcl:"aws_region"`
-	EC2InstanceId string `hcl:"ec2_instance_id"`
+	AWSRegion     string `hcl:"aws_region,optional"`
+	EC2InstanceId string `hcl:"ec2_instance_id,optional"`
 	LogGroupName  string `hcl:"log_group"`
-	LogStreamName string `hcl:"log_stream"`
-	LogPriority   string `hcl:"log_priority"`
+	LogStreamName string `hcl:"log_stream,optional"`
+	LogPriority   string `hcl:"log_priority,optional"`
 	StateFilename string `hcl:"state_file"`
-	JournalDir    string `hcl:"journal_dir"`
-	BufferSize    int    `hcl:"buffer_size"`
+	JournalDir    string `hcl:"journal_dir,optional"`
+	BufferSize    int    `hcl:"buffer_size,optional"`
 }
 
 func getLogLevel(priority string) (Priority, error) {
@@ -71,13 +71,6 @@ func LoadConfig(filename string) (*Config, error) {
 	fConfig, err := readFileConfig(filename, metaClient)
 	if err != nil {
 		return nil, err
-	}
-
-	if fConfig.LogGroupName == "" {
-		return nil, fmt.Errorf("log_group is required")
-	}
-	if fConfig.StateFilename == "" {
-		return nil, fmt.Errorf("state_file is required")
 	}
 
 	config := &Config{}
